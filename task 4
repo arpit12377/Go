@@ -1,0 +1,115 @@
+package main
+
+import (
+    "fmt"
+    psc "github.com/Dwarfartisan/goparsec"
+)
+
+type kv struct {
+    key   string
+    value interface{}
+}
+
+var tchar = psc.NoneOf("|{}= ")
+
+func escaped(st psc.ParseState) (interface{}, error) {
+    _, err := psc.Try(psc.Rune('\\'))(st)
+    if err == nil {
+        r, err := psc.AnyRune(st)
+        if err == nil {
+            switch r.(rune) {
+            case 't':
+                return '\t', nil
+            case '"':
+                return '"', nil
+            case 'n':
+                return '\n', nil
+            case '\\':
+                return '\\', nil
+            default:
+                return nil, st.Trap("Unknown escape \\%r", r)
+            }
+        } else {
+            return nil, err
+        }
+    } else {
+        return psc.NoneOf("\"")(st)
+    }
+}
+
+var token = psc.Either(
+    psc.Between(psc.Rune('"'), psc.Rune('"'),
+        psc.Try(psc.Bind(psc.Many1(escaped), psc.ReturnString))),
+    psc.Bind(psc.Many1(tchar), psc.ReturnString))
+
+// rune with skip spaces
+func syms(r rune) psc.Parser {
+    return func(st psc.ParseState) (interface{}, error) {
+        _, err := psc.Bind_(psc.Bind_(psc.Many(psc.Space), psc.Rune(r)), psc.Many(psc.Space))(st)
+        if err == nil {
+            return r, nil
+        } else {
+            return nil, err
+        }
+    }
+}
+
+var lbracket = syms('{')
+var rbracket = syms('}')
+var eql = syms('=')
+var vbar = syms('|')
+
+func pair(st psc.ParseState) (interface{}, error) {
+    left, err := token(st)
+    if err != nil {
+        return nil, err
+    }
+
+    right, err := psc.Bind_(eql, psc.Either(psc.Try(token), mapExpr))(st)
+    if err != nil {
+        return nil, err
+    }
+    return kv{left.(string), right}, nil
+}
+func pairs(st psc.ParseState) (interface{}, error) {
+    return psc.SepBy1(pair, vbar)(st)
+}
+func mapExpr(st psc.ParseState) (interface{}, error) {
+    p, err := psc.Try(psc.Between(lbracket, rbracket, pair))(st)
+    if err == nil {
+        return p, nil
+    }
+    ps, err := psc.Between(lbracket, rbracket, pairs)(st)
+    if err == nil {
+        return ps, nil
+    } else {
+        return nil, err
+    }
+}
+
+func makeMap(data interface{}) interface{} {
+    ret := make(map[string]interface{})
+    switch val := data.(type) {
+    case kv:
+        ret[val.key] = makeMap(val.value)
+    case string:
+        return data
+    case []interface{}:
+        for _, item := range val {
+            it := item.(kv)
+            ret[it.key] = makeMap(it.value)
+        }
+    }
+    return ret
+}
+
+func main() {
+    input := `{key1 = "\"value1\"\n" | key2 = { key3 = 10 } | key4 = {key5 = { key6 = value6}}}`
+    st := psc.MemoryParseState(input)
+    ret, err := mapExpr(makeMap(st))
+    if err == nil {
+        fmt.Println(ret)
+    } else {
+        fmt.Println(err)
+    }
+}
